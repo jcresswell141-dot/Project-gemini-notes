@@ -1,0 +1,679 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
+diff --git a/Code b/Code
+index 9643d9439de34d919ab956925c86679fb3725bc3..2450c5709637e257c0467c97388e1b92d03ec740 100644
+--- a/Code
++++ b/Code
+@@ -1,333 +1,427 @@
+ # @title 🚀 AQA A-Level Workflow (Verified GenAI SDK Version)
+ # ==============================================================================
+ # 1. SYSTEM SETUP
+ # ==============================================================================
+ # We install the NEW library that supports the search tools correctly
+ import os
+ import markdown
+-import re  # <--- Add this if it's missing!
++import re
+ 
+ !pip install -q -U google-genai markdown
+ 
+ from google import genai
+ from google.genai import types
+ from google.colab import drive
+ from google.colab import files
+-import os
+-# removed: import markdown # Import the markdown library
+ 
+ # --- MOUNT GOOGLE DRIVE ---
+ try:
+     drive.mount('/content/drive')
+ except Exception:
+     print("⚠️ Drive already mounted.")
+ 
+ drive_folder = "/content/drive/My Drive/AQA_Revision"
+ os.makedirs(drive_folder, exist_ok=True)
+ 
+ # ==============================================================================
+ # 2. CONFIGURATION
+ # ==============================================================================
+ 
+ GEMINI_API_KEY = "" # <--- PASTE KEY HERE
+ 
++if not GEMINI_API_KEY.strip():
++    raise ValueError("GEMINI_API_KEY is empty. Paste your API key before running this notebook.")
++
+ # --- INJECTION 1: THE AQA GRAPH ENGINE SYSTEM PROMPT ---
+ PROMPT_GRAPH_ENGINE = """
+ *** ROLE ***
+ You are the "AQA Economics Graph Engine." Your sole purpose is to generate Python `matplotlib` code.
+ 
+ *** AQA STYLE GUIDE ***
+ 1. LIBRARY: Use `matplotlib.pyplot` as `plt` and `numpy` as `np`.
+ 2. AESTHETICS:
+    - Background: White.
+    - Axes: Spines `top`/`right` invisible. `left`/`bottom` black.
+    - Labels: Font size 12. X-axis='Quantity' (or 'Real GDP'), Y-axis='Price' (or 'PL').
+    - Colors: Blue (#1f77b4) for Initial Curves, Red (#d62728) for Shifted Curves, Grey for Dotted Drop-lines.
+ 3. EXECUTION RULES:
+    - CALCULATE coordinates (don't guess). Use `np.linspace`.
+    - LABEL equilibrium points (P1, Q1) with dotted drop-lines to the axes.
+    - RETURN ONLY raw Python code. No markdown backticks, no text explanations.
+    - IMPLICIT KNOWLEDGE: If asked for "Monopoly", automatically plot AR, MR, AC, MC correctly.
+ """
+ 
+ # ------------------------------------------------------------------------------
+ # PROMPTS
+ # ------------------------------------------------------------------------------
+ PROMPT_1_FIND_SOURCE = """
+ Act as an expert AQA A-Level Researcher for the topic: {topic}.
+ 
+ SEARCH PROTOCOL:
+ 1. Use Google Search to find high-quality revision content.
+ 2. PRIORITY DOMAINS: 'Physics & Maths Tutor' (PMT), 'Save My Exams', 'Tutor2u'.
+ 3. STRICT CONSTRAINT: Filter for **AQA Specification** only. Ignore Edexcel/OCR content.
+ 
+ EXTRACTION TASK:
+ - Do not summarize; extract DETAILED educational content.
+ - MANDATORY SECTIONS TO FIND:
+   - Exact Definitions (AQA wording).
+   - Core Theories/Mechanisms (How it works).
+   - Key Studies/Case Studies (if applicable).
+   - Evaluation/Analysis Points (Strengths, Weaknesses, Limitations).
+ """
+ 
+ PROMPT_2_CREATE_NOTES = """
+ ### ROLE & GOAL
+ Act as a Senior Chief Examiner for AQA A-Level {topic}. Your goal is to convert the provided topic into "High-Yield Exam Notes" that are strictly spec-aligned and optimized for active recall.
+ 
+ ### SOURCE MATERIAL (USE THIS ONLY)
+ {source_text}
+ 
+ ### NON-NEGOTIABLE CONSTRAINTS
+ 1.  **No Prose:** Use bullet fragments and logic chains only.
+ 2.  **Spec-Check:** List the exact AQA spec points covered at the top.
+ 3.  **AO Separation:** Distinctly label sections as [AO1 Knowledge], [AO2 Application], [AO3 Analysis], [AO4 Evaluation].
++4.  **Layout Rule:** Use Markdown `###` headings for each major section so notes render cleanly into Cornell rows.
+ 
+ ### SUBJECT-SPECIFIC ARCHITECTURE (Choose one based on Subject)
+ 
+ **IF ECONOMICS:**
+ * **AO3 Chains:** Must use arrows (→) to show transmission mechanisms.If there is a relevant diagram, diagram analysis should be integrated into the chains.
+- * **Diagrams:** CRITICAL: You must identify where a diagram is needed and insert this tag: {{DRAW: <Exact Name of Diagram>}}.
+-   - Example: {{DRAW: Negative Externality in Production}}
+-   - Example: {{DRAW: J-Curve Effect}}
++ * **Diagrams:** CRITICAL: You must identify where a diagram is needed and insert this tag on its own line: {{{{DRAW: <Exact Name of Diagram>}}}}.
++   - Example: {{{{DRAW: Negative Externality in Production}}}}
++   - Example: {{{{DRAW: J-Curve Effect}}}}
+ * **Evaluation:** Use the "EV" tag for "Depends on" factors (e.g., Elasticity, Time lag).
+ 
+ 
+ **IF BUSINESS:**
+ * **Context Hooks:** For every concept, provide 1 real-world brand example (e.g., Apple, Tesla).
+ * **Evaluation:** Use "MOPS" structure (Market, Objectives, Product, Situation) to frame arguments.
+ 
+ **IF PSYCHOLOGY:**
+ * **AO1 Details:** For studies, strictly list: Aim | Procedure | Findings | Conclusion.
+ * **AO3 PEEL:** Provide 3 distinct evaluation points. Label them: `[Strength]` or `[Limitation]`. Tag relevant "Issues & Debates" (e.g., [Reductionism]).
+ 
+ ### OUTPUT FORMAT EXAMPLE (Few-Shot)
+ *Topic: Price Elasticity of Demand (Economics)*
+ **[Spec]** 4.1.1.5 PED numerical values and factors.
+ **[AO1]**
+ * **Def:** %ΔQD / %ΔP.
+ * **Values:** >1 Elastic, <1 Inelastic.
+ **[AO3 Chain]**
+ * Price ↑ → Substitutes available? (Yes) → Consumers switch → QD falls significantly → Revenue ↓.
+ **[AO4 Evaluation]**
+ * **Depends on Time:** SR (Inelastic/Habit) vs LR (Elastic/Switching).
+ 
+ 
+ """
+ 
+ PROMPT_3_CREATE_ANKI = """
+-Based on the notes above, create an Anki CSV.
++Based on the notes above, create Anki CSV output in two separate code blocks.
++
++System Role & Objective:
++You are an expert AQA A-Level Study Assistant and Flashcard Engineer. Convert the provided notes into high-performance Anki flashcards that support top-band exam responses.
+ 
+-[System Role & Objective
+-You are an expert AQA A-Level Study Assistant and Flashcard Engineer. Your goal is to convert PDF notes into high-performance Anki flashcards that guarantee full-marks/top-band exam performance.
+ Core Workflow:
+-1. Analyze (Internal): Read notes, clean clutter, and map to the AQA Specification to ensure coverage.
+-2. Generate (Immediate): Output the final, ready-to-import CSV blocks immediately. Do not output a draft or ask for confirmation.
+-1. Input Handling
+-I will provide:
+-• Source Material: PDF notes or topic references.
+-• Context: Subject & Exam Board (e.g., AQA A-Level Psychology).
+-• Spec (Optional): AQA specification document or bullet points.
+-• Title: Use the provided title or the PDF filename (contextualize all cards with this).
+-2. Processing & Spec Mapping (Internal Quality Control)
+-Before generating the CSVs, you must internally:
+-• Extract & Clean: Identify headings, definitions, processes, diagrams, and AO3 evaluation.
+-• Map to Spec: Ensure content matches the AQA specification.
+-• Gap Handling: If a spec point is missing in the notes, do not invent detailed facts. Instead, create a card flagging the gap (e.g., Front: "Missing Spec Point: [Topic]", Back: "Refer to textbook/spec for [Details]").
+-3. Card Engineering Rules (Non-Negotiable)
+-A. General Quality Standards
+-• AQA Full-Marks Standard: Every card must support a top-band answer (correct command word response, precise phrasing).
+-• Detail Refinement Protocol: If notes are "thin," you must refine wording to meet A-Level standards using logic and inference without changing the core meaning. Do not add "nice-to-know" bloat, but ensure definitions include: Classification + Mechanism + Outcome.
+-• No Duplicates: Merge or tweak rather than creating low-value variations.
+-• Context: Every card Front must include the Notes Title.
+-B. Front/Back Contract (Strict Logic)
+-• Point Locking: If Front asks for "N reasons," Back must have exactly N distinct bolded points. All other valid answers go to Extra.
+-• Command Words:
+-• Define: Classification + Mechanism.
+-• Explain: Cause → Effect chain.
+-• Evaluate: Condition → Mechanism → Judgment (WELFATE/SMARTER criteria).
+-• Diagrams (Econ/Bus): Front: "Draw [Diagram Name]." Back: "[Insert diagram]".
+-C. Card Types
+-Type 1: Basic Cards (Retention & Explanation)
+-• Use for: Explanations, Processes, Comparisons, Diagrams.
+-• Format: Front (Question) / Back (Short, bolded bullet points).
+-Type 2: Cloze Cards (Definitions & Lists)
+-• Use for: Definitions, Formulae, Critical phrases, Ordered lists.
+-• Format: Use Anki syntax {{c1::hidden text}}.
+-• Calibration: Create 2–5 gaps per card to reconstruct the whole chain. Cloze the Verb, Object, or Qualifier. Do not over-clo
+-ze (maintain readability).
+-D. Special Protocol: Evaluation Cards (AO3)
+-• No Label-Only Cards: Never have a card that just says "Time Lag." It must include the Description (Condition → Mechanism → Impact).
+-• The Chunking Rule: Do not list 4+ full points on one card.
+-• Total 3 points: Card A (2 described) + Card B (1 described + cues for others).
+-• Total 4 points: Card A (2 described + cues) + Card B (2 described + cues).
+-• Format: Front: "Evaluate [Topic] (2 points in full + identify others)." Back: 2 full points + "ID Only: [cue], [cue]".
+-• The Summary Card: Always create one extra card: "Name all Evaluation points for [Topic] (State N)." (Labels only).
+-4. Output Instructions (Immediate CSV Generation)
+-You must output the final data immediately. You must strictly separate card types into two distinct CSV code blocks. Do not mix them.
+-Block 1: Basic Cards CSV
+-• Code Fence: Use a dedicated code block for this.
+-• Header: Front,Back,Extra,Tag
+-• Content: Only Basic cards.
+-• Formatting: Use <b> tags for highlighting in the Back field. Wrap fields containing commas/newlines in double quotes.
+-Block 2: Cloze Cards CSV
+-• Code Fence: Use a separate, second code block for this.
+-• Header: Front,Back,Extra,Tag
+-• Content: Only Cloze cards.
+-• Formatting: Back field contains {{c1::...}}. Wrap fields containing commas/newlines in double quotes.
+-Tag Format:
+-ModuleName Subtopic (Use underscores for spaces within names, space between Module and Subtopic). Example: Market_Failure Public_Goods.]
++1. Analyze internally: clean clutter and map content to the AQA specification.
++2. Generate immediately: output final ready-to-import CSV blocks without drafts or follow-up questions.
++
++Input Handling:
++- Source material: notes/topic references.
++- Context: subject and exam board.
++- Spec (optional): AQA specification points.
++- Title: use provided title or infer from topic; include this context in every card front.
++
++Processing & Spec Mapping (internal quality checks):
++- Extract headings, definitions, processes, diagrams, and AO3 evaluation content.
++- Ensure cards map to AQA spec points where possible.
++- If a spec point is missing in notes, do not invent facts; create a "Missing Spec Point" card that flags the gap.
++
++Card Engineering Rules (non-negotiable):
++A) General quality:
++- Every card must support full-mark phrasing for command words.
++- If notes are thin, refine wording for A-Level precision without changing core meaning.
++- Avoid duplicates; merge low-value variants.
++
++B) Front/Back contract:
++- If front asks for "N reasons," back must contain exactly N distinct bolded points.
++- Define: classification + mechanism.
++- Explain: cause → effect chain.
++- Evaluate: condition → mechanism → judgement.
++- Diagram cards (Econ/Business): Front "Draw [Diagram Name]", Back "[Insert diagram]".
++
++C) Card types:
++1) Basic cards: explanations, processes, comparisons, diagrams.
++2) Cloze cards: definitions, formulae, critical phrases, ordered lists.
++   - Use Anki cloze syntax {{c1::...}}.
++   - Use 2-5 meaningful gaps per card.
++   - Do not over-cloze; keep readability high.
++
++D) Evaluation card protocol (AO3):
++- No label-only cards; include mechanism and impact.
++- Do not place 4+ fully explained points on one card.
++- For 3 points: Card A (2 full points), Card B (1 full point + cues).
++- For 4 points: Card A (2 full points + cues), Card B (2 full points + cues).
++- Always add one summary card naming all evaluation points (labels only).
++
++Output Instructions (strict):
++- Output immediately in exactly two distinct CSV code blocks. Do not mix card types.
++- Both blocks must use header: Front,Back,Extra,Tag
++- Block 1: Basic cards only.
++- Block 2: Cloze cards only.
++- Wrap fields containing commas/newlines in double quotes.
++- Use <b> tags for emphasis in Back where appropriate.
++- Tag format: ModuleName Subtopic (underscores within names, a space between module and subtopic).
+ """
+ 
+ # ==============================================================================
+ # 3. THE WORKFLOW (Fixed Logic)
+ # ==============================================================================
+ client = genai.Client(api_key=GEMINI_API_KEY)
+ # --- INJECTION 3: THE DIAGRAM GENERATOR FUNCTION ---
+ import io
+ import base64
+ import matplotlib.pyplot as plt
+ import numpy as np
+ 
++
++
++def infer_default_diagram_request(topic, notes_text):
++    lower = f"{topic} {notes_text}".lower()
++    if 'ad' in lower and 'as' in lower:
++        return 'AD-AS model (Aggregate Demand and Aggregate Supply shift analysis)'
++    if 'aggregate demand' in lower or 'aggregate supply' in lower:
++        return 'AD-AS model (Aggregate Demand and Aggregate Supply shift analysis)'
++    if 'ppc' in lower or 'production possibility' in lower:
++        return 'Production Possibility Curve (PPC)'
++    if 'market failure' in lower:
++        return 'Negative Externality in Consumption'
++    return f"Economics diagram for {topic}"
++
++
++def generate_fallback_template_diagram_base64(diagram_request):
++    req = diagram_request.lower()
++    try:
++        plt.close('all')
++        fig, ax = plt.subplots(figsize=(7, 4.6), dpi=160)
++
++        if 'ad' in req and 'as' in req:
++            x = np.linspace(0, 100, 200)
++            ad = 90 - 0.5 * x
++            sras = 20 + 0.45 * x
++            lras = np.full_like(x, 58)
++
++            ax.plot(x, ad, color='#1f77b4', linewidth=2.2, label='AD')
++            ax.plot(x, sras, color='#2ca02c', linewidth=2.2, label='SRAS')
++            ax.plot(x, lras, color='#7f7f7f', linestyle='--', linewidth=2.0, label='LRAS')
++
++            q_eq = (90 - 20) / (0.5 + 0.45)
++            p_eq = 90 - 0.5 * q_eq
++            ax.scatter([q_eq], [p_eq], color='black', s=18, zorder=5)
++            ax.annotate('E1', (q_eq, p_eq), xytext=(6, 6), textcoords='offset points', fontsize=10)
++
++            ax.set_xlabel('Real GDP', fontsize=12)
++            ax.set_ylabel('PL', fontsize=12)
++            ax.set_title('AD-AS Analysis', fontsize=12)
++            ax.set_xlim(0, 100)
++            ax.set_ylim(0, 90)
++        else:
++            x = np.linspace(0, 100, 200)
++            d = 85 - 0.6 * x
++            s = 15 + 0.6 * x
++            ax.plot(x, d, color='#1f77b4', linewidth=2.2, label='Demand')
++            ax.plot(x, s, color='#d62728', linewidth=2.2, label='Supply')
++            ax.set_xlabel('Quantity', fontsize=12)
++            ax.set_ylabel('Price', fontsize=12)
++            ax.set_title('Economics Diagram', fontsize=12)
++            ax.set_xlim(0, 100)
++            ax.set_ylim(0, 90)
++
++        ax.spines['top'].set_visible(False)
++        ax.spines['right'].set_visible(False)
++        ax.legend(loc='best', frameon=False, fontsize=9)
++        plt.tight_layout()
++
++        buf = io.BytesIO()
++        fig.savefig(buf, format='png', bbox_inches='tight', dpi=160)
++        plt.close(fig)
++        buf.seek(0)
++        img_str = base64.b64encode(buf.read()).decode('utf-8')
++
++        return (
++            '\n<div class="diagram-block">'
++            f'<div class="diagram-title">{diagram_request} (template fallback)</div>'
++            f'<img alt="{diagram_request}" src="data:image/png;base64,{img_str}" class="diagram-img">'
++            '</div>\n'
++        )
++    except Exception:
++        return ''
++
+ def generate_diagram_base64(diagram_request):
+     print(f"   🎨 Generating Diagram: '{diagram_request}'...")
+     try:
+-        # 1. Ask Gemini to write the code
+         response = client.models.generate_content(
+             model='gemini-2.5-pro',
+-            contents=f"Generate matplotlib code for: {diagram_request}",
++            contents=(
++                f"Generate matplotlib code for this AQA economics diagram request: {diagram_request}. "
++                "Return Python code only, no markdown fences, no explanation."
++            ),
+             config=types.GenerateContentConfig(
+                 system_instruction=PROMPT_GRAPH_ENGINE,
+-                temperature=0.1 # Precise math
++                temperature=0.05
+             )
+         )
+ 
+-        # 2. Extract Code (Strip Markdown)
+-        code = response.text.replace("```python", "").replace("```", "").strip()
++        code = (response.text or "").replace("```python", "").replace("```", "").strip()
++        if "plt" not in code:
++            raise ValueError("Model output did not include matplotlib plotting code.")
+ 
+-        # 3. Execute Code safely to a buffer
+-        plt.figure(figsize=(6, 4), dpi=100)
+-        # We pass local variables to exec() so it has access to plt/np
+-        exec(code, {'plt': plt, 'np': np})
++        plt.close('all')
++        plt.figure(figsize=(7, 4.6), dpi=160)
++
++        safe_builtins = {
++            'abs': abs,
++            'min': min,
++            'max': max,
++            'len': len,
++            'range': range,
++            'float': float,
++            'int': int,
++        }
++        exec(code, {'__builtins__': safe_builtins, 'plt': plt, 'np': np})
++
++        fig = plt.gcf()
++        if not fig.axes:
++            raise ValueError("Diagram code executed but produced no axes.")
+ 
+-        # 4. Save Image to Memory (Base64)
+         buf = io.BytesIO()
+-        plt.savefig(buf, format='png', bbox_inches='tight')
+-        plt.close()
++        plt.tight_layout()
++        plt.savefig(buf, format='png', bbox_inches='tight', dpi=160)
++        plt.close(fig)
+         buf.seek(0)
+         img_str = base64.b64encode(buf.read()).decode('utf-8')
+ 
+-        # 5. Return HTML Image Tag
+-        return f'<div style="text-align:center; margin: 20px 0;"><img src="data:image/png;base64,{img_str}" style="max-width:100%; border:1px solid #ddd; border-radius:4px;"></div>'
++        return (
++            '\n<div class="diagram-block">'
++            f'<div class="diagram-title">{diagram_request}</div>'
++            f'<img alt="{diagram_request}" src="data:image/png;base64,{img_str}" class="diagram-img">'
++            '</div>\n'
++        )
+ 
+     except Exception as e:
+         print(f"   ⚠️ Diagram Failed ({diagram_request}): {e}")
+-        return f""
++        template_diagram = generate_fallback_template_diagram_base64(diagram_request)
++        if template_diagram:
++            print(f"   ✅ Used template fallback diagram for: '{diagram_request}'")
++            return template_diagram
++        return (
++            '\n<div class="diagram-fallback">'
++            f'⚠️ Diagram generation failed for: <strong>{diagram_request}</strong>.'
++            '</div>\n'
++        )
+ 
+ def run_workflow(topic):
+     print(f"\n🚀 STARTING WORKFLOW FOR: {topic}")
+     print("-" * 50)
+ 
+     # --- STEP 1: SEARCH ---
+     print(f"🔎 Step 1: Searching PMT/SaveMyExams...")
+ 
+     # This is the NEW correct way to enable search using 'types'
+     try:
+         response = client.models.generate_content(
+             model='gemini-2.5-pro',
+             contents=PROMPT_1_FIND_SOURCE.format(topic=topic),
+             config=types.GenerateContentConfig(
+                 tools=[types.Tool(google_search=types.GoogleSearch())],
+                 response_modalities=["TEXT"]
+             )
+         )
+         print(f"DEBUG: Raw model response from Step 1 search: {response}") # Added debug print
+         source_content = response.text
+         if source_content is None or source_content == 'NO_SOURCE_FOUND':
+             print(f"❌ Search Error: Model returned no text content or indicated no source for topic '{topic}'. This might mean no relevant source was found or the extraction failed.")
+             # Attempt to extract content from tool_code if response.text is None but tools were used
+             if response.candidates and response.candidates[0].content.parts:
+                 for part in response.candidates[0].content.parts:
+                     if part.function_call and part.function_call.name == 'GoogleSearch':
+                         # If the model intended to use GoogleSearch but didn't output text,
+                         # we might need to inspect the tool outputs or adjust prompt.
+                         print("DEBUG: Model's response included a GoogleSearch function call, but no text output.")
+                         # For now, we will return as no text content was generated for 'source_content'
+             return
+         print(f"   ✅ Source Found! (Length: {len(source_content)} chars)")
+     except Exception as e:
+         print(f"❌ Search Error: {e}")
+         return
+ 
+     # --- STEP 2: NOTES ---
+-print("📝 Step 2: Generating A* Notes...")
+-response = client.models.generate_content(
+-    model='gemini-2.5-pro',
+-    contents=PROMPT_2_CREATE_NOTES.format(source_text=source_content, topic=topic),
+-    config=types.GenerateContentConfig(temperature=0.2)
+-)
+-notes_text = response.text or ""
+-
+-# --- STEP 2.5: DETECT & RENDER DIAGRAMS (FIXED) ---
+-print("🎨 Step 2.5: Processing Diagrams...")
+-
+-pattern = r"\{\{\s*DRAW\s*:\s*(.*?)\s*\}\}"
+-notes_text = re.sub(
+-    pattern,
+-    lambda m: generate_diagram_base64(m.group(1)),
+-    notes_text,
+-    flags=re.IGNORECASE
+-)
+-
+-
+-
+-    # 2. Run the Substitution
+-    # This finds every match, extracts the name, runs 'generate_diagram_base64',
+-    # and replaces the text tag with the HTML image tag.
++    print("📝 Step 2: Generating A* Notes...")
++    response = client.models.generate_content(
++        model='gemini-2.5-pro',
++        contents=PROMPT_2_CREATE_NOTES.format(source_text=source_content, topic=topic),
++        config=types.GenerateContentConfig(temperature=0.2)
++    )
++    notes_text = response.text or ""
++
++    # --- STEP 2.5: DETECT & RENDER DIAGRAMS ---
++    print("🎨 Step 2.5: Processing Diagrams...")
++
++    pattern = r"\{\{?\s*DRAW\s*:\s*(.*?)\s*\}\}?"
++    draw_matches = re.findall(pattern, notes_text, flags=re.IGNORECASE)
++    print(f"DEBUG: DRAW tags detected before replacement: {len(draw_matches)}")
++
++    if not draw_matches and 'economics' in topic.lower():
++        inferred_request = infer_default_diagram_request(topic, notes_text)
++        print(f"DEBUG: No DRAW tags found for economics topic. Injecting inferred diagram: {inferred_request}")
++        notes_text += f"\n\n{{{{DRAW: {inferred_request}}}}}\n"
++        draw_matches = re.findall(pattern, notes_text, flags=re.IGNORECASE)
++
+     notes_text = re.sub(
+         pattern,
+-        lambda match: generate_diagram_base64(match.group(1)),
+-        notes_text
++        lambda m: generate_diagram_base64(m.group(1).strip()),
++        notes_text,
++        flags=re.IGNORECASE
+     )
+-print("DEBUG: any DRAW tags left?", "{{" in notes_text and "DRAW" in notes_text.upper())
++    print("DEBUG: any DRAW tags left?", "{{" in notes_text and "DRAW" in notes_text.upper())
++    print("DEBUG: diagram blocks injected:", notes_text.count('class="diagram-block"'))
+ 
+     # --- (Start of Step 3: Saving Cornell HTML) ---
+     # print(f"💾 Step 3: Saving Cornell Notes as HTML...")
+     # ...
+ 
+     #: --- STEP 3: SAVE ---
+                 # --- STEP 3: SAVE AS CORNELL HTML (Ultra-Wide 10:90 Layout) ---
+     print(f"💾 Step 3: Saving Cornell Notes as HTML...")
+     safe_topic = topic.replace(" ", "_").replace("/", "-")
+     notes_filename = f"{drive_folder}/Cornell_{safe_topic}.html"
+ 
+     # 1. Convert Markdown to basic HTML
+-    import markdown
+-    raw_html = markdown.markdown(notes_text)
++    raw_html = markdown.markdown(notes_text, extensions=['extra', 'sane_lists'])
+ 
+     # 2. INJECT CORNELL LAYOUT (The Splitter Logic)
+-    import re
+ 
+     # Wrapper function to split H3 headers into the Left Column
+     def cornell_wrapper(match):
+         header = match.group(1)
+         content = match.group(2)
+         return f'''
+         <div class="cornell-row">
+             <div class="cornell-cue"><h3>{header}</h3></div>
+             <div class="cornell-note">{content}</div>
+         </div>
+         '''
+ 
+     # Apply the logic: Find H3 -> Grab Content -> Wrap in Divs
+     cornell_html = re.sub(r'<h3>(.*?)</h3>(.*?)(?=<h3>|$)', cornell_wrapper, raw_html, flags=re.DOTALL)
+ 
+     # 3. CSS STYLING (Micro-Font + 10/90 Split)
+     full_html_content = f"""
+     <!DOCTYPE html>
+     <html>
+     <head>
+         <title>{topic} - Cornell Notes</title>
+         <style>
+             /* Base Paper Style */
+             body {{
+                 font-family: "Segoe UI", Helvetica, Arial, sans-serif;
+@@ -365,94 +459,113 @@ print("DEBUG: any DRAW tags left?", "{{" in notes_text and "DRAW" in notes_text.
+ 
+             /* Left Column: Cues/Headers (10% Width) */
+             .cornell-cue {{
+                 width: 10%;  /* <--- CHANGED TO 10% */
+                 background-color: #f8f9fa;
+                 border-right: 2px solid #003366;
+                 padding: 8px;
+                 color: #003366;
+                 font-weight: bold;
+                 word-wrap: break-word; /* Critical for narrow columns */
+                 hyphens: auto;        /* Helps long words fit */
+             }}
+             .cornell-cue h3 {{ margin: 0; font-size: 1.1em; }}
+ 
+             /* Right Column: Notes (90% Width) */
+             .cornell-note {{
+                 width: 90%; /* <--- CHANGED TO 90% */
+                 padding: 8px 15px;
+             }}
+ 
+             /* Tighten lists */
+             ul {{ margin: 0; padding-left: 15px; }}
+             li {{ margin-bottom: 2px; }}
+ 
+             strong {{ color: #003366; }}
++
++            .diagram-block {{
++                margin: 14px 0 18px 0;
++                padding: 10px;
++                border: 1px solid #d9e2f1;
++                border-radius: 8px;
++                background: #fbfdff;
++            }}
++
++            .diagram-title {{
++                font-size: 11px;
++                font-weight: 600;
++                color: #003366;
++                margin-bottom: 8px;
++            }}
++
++            .diagram-img {{
++                display: block;
++                max-width: 100%;
++                height: auto;
++                border: 1px solid #ccd5e0;
++                border-radius: 6px;
++                background: #fff;
++            }}
++
++            .diagram-fallback {{
++                margin: 10px 0;
++                padding: 8px 10px;
++                border-left: 3px solid #d97706;
++                background: #fff8eb;
++                color: #7c2d12;
++            }}
+         </style>
+     </head>
+     <body>
+         <div class="page-container">
+             <h1>🎓 {topic}</h1>
+             {cornell_html}
+         </div>
+     </body>
+     </html>
+     """
+ 
+     with open(notes_filename, 'w') as f:
+         f.write(full_html_content)
+     print(f"   ✅ Saved Cornell View: {notes_filename}")
+ 
+     # --- STEP 4: ANKI ---
+     print(f"📇 Step 4: Creating Anki Cards...")
+     final_anki_prompt = f"{notes_text}\n\n{PROMPT_3_CREATE_ANKI}"
+ 
+     response = client.models.generate_content(
+         model='gemini-2.5-pro',
+         contents=final_anki_prompt,
+         config=types.GenerateContentConfig(temperature=0.2)
+     )
+ 
+-    # Split the response text into potential CSV blocks
+-    # The model is instructed to output two CSV blocks, so we need to capture both.
+-    csv_blocks = response.text.split('```csv')
+-
+-    basic_cards_csv = ""
+-    cloze_cards_csv = ""
+-
+-    # Assuming the first non-empty block after splitting by '```csv' is Basic Cards
+-    # and the second is Cloze Cards, as per the new prompt structure.
+-    if len(csv_blocks) > 1:
+-        basic_cards_raw = csv_blocks[1].split('```')[0].strip()
+-        if basic_cards_raw:
+-            basic_cards_csv = basic_cards_raw
+-
+-    # Check for the second CSV block (Cloze Cards)
+-    if len(csv_blocks) > 2:
+-        cloze_cards_raw = csv_blocks[2].split('```')[0].strip()
+-        if cloze_cards_raw:
+-            cloze_cards_csv = cloze_cards_raw
++    # Extract CSV fenced blocks robustly (```csv or plain ```)
++    model_output = response.text or ""
++    csv_blocks = re.findall(r"```(?:csv)?\s*(.*?)```", model_output, flags=re.DOTALL | re.IGNORECASE)
++
++    basic_cards_csv = csv_blocks[0].strip() if len(csv_blocks) >= 1 else ""
++    cloze_cards_csv = csv_blocks[1].strip() if len(csv_blocks) >= 2 else ""
+ 
+     # Save and download the Basic Cards CSV if generated
+     if basic_cards_csv:
+         basic_csv_filename = f"Anki_Basic_{safe_topic}.csv"
+         with open(basic_csv_filename, 'w') as f:
+             f.write(basic_cards_csv)
+         files.download(basic_csv_filename)
+         print(f"   ✅ Downloaded Basic Cards: {basic_csv_filename}")
+     else:
+         print("   ⚠️ No Basic Cards CSV generated.")
+ 
+     # Save and download the Cloze Cards CSV if generated
+     if cloze_cards_csv:
+         cloze_csv_filename = f"Anki_Cloze_{safe_topic}.csv"
+         with open(cloze_csv_filename, 'w') as f:
+             f.write(cloze_cards_csv)
+         files.download(cloze_csv_filename)
+         print(f"   ✅ Downloaded Cloze Cards: {cloze_csv_filename}")
+     else:
+         print("   ⚠️ No Cloze Cards CSV generated.")
+ 
+     if not basic_cards_csv and not cloze_cards_csv:
+         print("❌ No Anki CSVs were generated at all. Please check the model's output.")
+     else:
+         print("🎉 Done!")
+ 
+EOF
+)
