@@ -29,7 +29,7 @@ os.makedirs(drive_folder, exist_ok=True)
 # 2. CONFIGURATION
 # ==============================================================================
 
-GEMINI_API_KEY = "AIzaSyBM5S7inu6Nol-MfkmC7nkopub8xGXdxfU" # <--- PASTE KEY HERE
+GEMINI_API_KEY = "" # <--- PASTE KEY HERE
 
 # --- INJECTION 1: THE AQA GRAPH ENGINE SYSTEM PROMPT ---
 PROMPT_GRAPH_ENGINE = """
